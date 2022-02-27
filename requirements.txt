@@ -1,5 +1,6 @@
 pytube==10.9.2
 Pillow
+flask-restful
 #pytest
 # yt-dlp
 # youtube-dlp
