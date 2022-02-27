@@ -22,7 +22,7 @@ def home():
 def disp(url):
     if("www" in url or "youtube" in url):
         return "only include youtube VIDEO_ID, don't include complete url, https://www.youtube.com/watch?v=VIDEO_ID"
-    p = Popen(['python', 'livestream_saver.py', 'download', '-q', '360', 'https://www.youtube.com/watch?v='+url]) 
+    p = Popen(['python3', 'livestream_saver.py', 'download', '-q', '360', 'https://www.youtube.com/watch?v='+url]) 
     return "Download triggered, DO NOT HIT THIS ENDPOINT AGAIN!"
   
   
