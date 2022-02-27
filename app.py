@@ -20,7 +20,7 @@ def home():
 # this returns 100 (square of 10)
 @app.route('/download/<url>', methods = ['GET'])
 def disp(url):
-    p = Popen(['python', 'livestream_saver.py', 'download', 'https://www.youtube.com/watch?v='+url]) 
+    p = Popen(['python', 'livestream_saver.py', 'download', '-q', '360', 'https://www.youtube.com/watch?v='+url]) 
     return jsonify({'data': url})
   
   
