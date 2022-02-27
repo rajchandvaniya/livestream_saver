@@ -11,7 +11,7 @@ app = Flask(__name__)
 # returns the data that we send when we use POST.
 @app.route('/')
 def home():  
-        data = "API to download P.P. Prabodh Swamiji Live Sabha"
+        data = "API to download P.P. Prabodh Swamiji Live Pooja"
         return data;
   
 # A simple function to calculate the square of a number
@@ -20,8 +20,10 @@ def home():
 # this returns 100 (square of 10)
 @app.route('/download/<url>', methods = ['GET'])
 def disp(url):
+    if("www" in url or "youtube" in url):
+        return "only include youtube VIDEO_ID, don't include complete url, https://www.youtube.com/watch?v=VIDEO_ID"
     p = Popen(['python', 'livestream_saver.py', 'download', '-q', '360', 'https://www.youtube.com/watch?v='+url]) 
-    return jsonify({'data': url})
+    return "Download triggered, DO NOT HIT THIS ENDPOINT AGAIN!"
   
   
 # driver function
