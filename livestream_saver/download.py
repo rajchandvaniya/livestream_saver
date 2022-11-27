@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from email.mime import audio
 from os import sep, path, makedirs, listdir
 from sys import stderr
 from platform import system
@@ -35,6 +36,7 @@ COPY_BUFSIZE = 1024 * 1024 if ISWINDOWS else 64 * 1024
 # logger.setLevel(logging.DEBUG)
 
 # Temporary backport from pytube 11.0.1
+# and also https://github.com/pytube/pytube/issues/1281
 def get_throttling_function_name(js: str) -> str:
     """Extract the name of the function that computes the throttling parameter.
 
@@ -52,7 +54,7 @@ def get_throttling_function_name(js: str) -> str:
         # Bpa.length || iha("")) }};
         # In the above case, `iha` is the relevant function name
         r'a\.[a-zA-Z]\s*&&\s*\([a-z]\s*=\s*a\.get\("n"\)\)\s*&&\s*'
-        r'\([a-z]\s*=\s*([a-zA-Z0-9$]{3})(\[\d+\])?\([a-z]\)'
+        r'\([a-z]\s*=\s*([a-zA-Z0-9$]+)(\[\d+\])?\([a-z]\)'
     ]
     # print('Finding throttling function name')
     for pattern in function_patterns:
@@ -67,7 +69,7 @@ def get_throttling_function_name(js: str) -> str:
                 idx = idx.strip("[]")
                 array = re.search(
                     r'var {nfunc}\s*=\s*(\[.+?\]);'.format(
-                        nfunc=function_match.group(1)), 
+                        nfunc=re.escape(function_match.group(1))),
                     js
                 )
                 if array:
@@ -124,7 +126,7 @@ def patched__init__(self, js: str):
     var_regex = re.compile(r"^\$*\w+\W")
     var_match = var_regex.search(self.transform_plan[0])
     if not var_match:
-        raise RegexMatchError(
+        raise pytube.RegexMatchError(
             caller="__init__", pattern=var_regex.pattern
         )
     var = var_match.group(0)[:-1]
@@ -176,6 +178,7 @@ class YoutubeLiveStream():
         hooks: Dict = {},
         skip_download = False,
         filters: Dict[str, re.Pattern] = {},
+        ignore_quality_change: bool = False,
         log_level = logging.INFO
     ) -> None:
 
@@ -195,6 +198,7 @@ class YoutubeLiveStream():
 
         self.hooks = hooks
         self.skip_download = skip_download
+        self.ignore_quality_change = ignore_quality_change
 
         # NOTE if "www" is omitted, it might force a redirect on YT's side
         # (with &ucbcb=1) and force us to update cookies again. YT is very picky
@@ -373,7 +377,6 @@ We assume a failed download attempt. Last segment available was {seg}.")
         self._embed_html = pytube.request.get(url=self.embed_url)
         return self._embed_html
 
-
     @property
     def json(self):
         if self._json:
@@ -381,8 +384,12 @@ We assume a failed download attempt. Last segment available was {seg}.")
         try:
             # json_string = extract.initial_player_response(self.watch_html)
             # API request with ANDROID client gives us a pre-signed URL
-            json_string = self.session.make_api_request(self.video_id)
-            self._json = extract.str_as_json(json_string)
+            self._json = self.session.make_api_request(
+                endpoint="https://www.youtube.com/youtubei/v1/player",
+                payload={
+                    "videoId": self.video_id
+                }
+            )
             self.session.is_logged_out(self._json)
 
             remove_useless_keys(self._json)
@@ -495,9 +502,9 @@ We assume a failed download attempt. Last segment available was {seg}.")
         """
         # self.update_status()
         query = pytube.StreamQuery(self.fmt_streams)
-        # BUG in pytube, livestreams with resolution higher than 1080 do not 
-        # return descriptions for their available streams, except in the 
-        # DASH MPD manifest! These descriptions seem to re-appear after the 
+        # BUG in pytube, livestreams with resolution higher than 1080 do not
+        # return descriptions for their available streams, except in the
+        # DASH MPD manifest! These descriptions seem to re-appear after the
         # stream has been converted to a VOD though.
         if len(query) == 0:
             if mpd_streams := self.get_streams_from_mpd():
@@ -874,7 +881,12 @@ playability status is: {status} \
                 f"Previous video itag: {self.video_itag}. New: {video_quality}.\n"
                 f"Previous audio itag: {self.audio_itag}. New: {audio_quality}"
             )
-            raise Exception("Format mismatch after update of base URL.")
+
+            # If the codec is too different, abort download:
+            if not self.ignore_quality_change or \
+            ((self.audio_itag.mime_type != audio_quality.mime_type)
+            or (self.video_itag.mime_type != video_quality.mime_type)):
+                raise Exception("Stream format mismatch after update of base URL.")
 
         self.video_itag = video_quality
         self.audio_itag = audio_quality
@@ -922,7 +934,7 @@ playability status is: {status} \
             dir_existed = False
             for path in (self.video_outpath, self.audio_outpath):
                 try:
-                    makedirs(path, 0o766)
+                    makedirs(path, 0o770)
                 except FileExistsError:
                     dir_existed = True
 
@@ -977,12 +989,14 @@ playability status is: {status} \
             while True:
                 try:
                     self.do_download()
-                except (exceptions.EmptySegmentException,
-                        exceptions.ForbiddenSegmentException,
-                        IncompleteRead,
-                        ValueError,
-                        ConnectionError  # ConnectionResetError - Connection reset by peer
-                    ) as e:
+                except (
+                    exceptions.EmptySegmentException,
+                    exceptions.ForbiddenSegmentException,
+                    IncompleteRead,
+                    ValueError,
+                    ConnectionError,  # ConnectionResetError - Connection reset by peer
+                    urllib.error.HTTPError # typically 404 errors, need refresh
+                ) as e:
                     self.logger.info(e)
                     # force update
                     self._watch_html = None
@@ -1026,7 +1040,7 @@ playability status is: {status} \
         if self.error:
             self.logger.critical(f"Some kind of error occured during download? {self.error}")
 
-    def download_seg(self, baseurl, seg, type):
+    def download_seg(self, baseurl: BaseURL, seg, type):
         segment_url: str = baseurl.add_seg(seg)
 
         # To have zero-padded filenames (not compatible with
@@ -1040,7 +1054,7 @@ playability status is: {status} \
         with closing(urlopen(segment_url)) as in_stream:
             headers = in_stream.headers
             status = in_stream.status
-            if self.logger.isEnabledFor(logging.DEBUG):
+            if status >= 204:
                 self.logger.debug(f"Seg {self.seg} {type} URL: {segment_url}")
                 self.logger.debug(f"Seg status: {status}")
                 self.logger.debug(f"Seg headers:\n{headers}")
@@ -1060,8 +1074,8 @@ playability status is: {status} \
 
         last_check_time = datetime.now()
         wait_sec = 3
-        max_attempt = 10
-        attempt = 0
+        max_attempts = 10
+        attempts_left = max_attempts
         while True:
             try:
                 self.print_progress(self.seg)
@@ -1075,32 +1089,36 @@ playability status is: {status} \
 
                 if not self.download_seg(self.video_base_url, self.seg, "video") \
                 or not self.download_seg(self.audio_base_url, self.seg, "audio"):
-                    attempt += 1
-                    if attempt <= max_attempt:
+                    attempts_left -= 1
+                    if attempts_left >= 0:
                         self.logger.warning(
-                            f"Waiting for {wait_sec} seconds before retrying... "
-                            f"(attempt {attempt}/{max_attempt})")
+                            f"Waiting for {wait_sec} seconds before retrying "
+                            f"segment {self.seg} (attempt {max_attempts - attempts_left}/{max_attempts})")
                         sleep(wait_sec)
                         continue
                     else:
                         self.logger.warning(
                             f"Skipping segment {self.seg} due to too many attempts.")
-                attempt = 0
+                # Resetting error counter and moving on to next segment
+                attempts_left = max_attempts
                 self.seg_attempt = 0
                 self.seg += 1
 
             except urllib.error.URLError as e:
                 self.logger.critical(f'{type(e)}: {e}')
+                if e.reason == "Not Found":
+                    # Try to refresh immediately
+                    raise
                 if e.reason == 'Forbidden':
                     # Usually this means the stream has ended and parts
                     # are now unavailable.
                     raise exceptions.ForbiddenSegmentException(e.reason)
-                if attempt > max_attempt:
+                if attempts_left < 0:
                     raise e
-                attempt += 1
+                attempts_left -= 1
                 self.logger.warning(
                     f"Waiting for {wait_sec} seconds before retrying... "
-                    f"(attempt {attempt}/{max_attempt})")
+                    f"(attempt {max_attempts - attempts_left}/{max_attempts})")
                 sleep(wait_sec)
                 continue
             except (IncompleteRead, ValueError) as e:
@@ -1411,10 +1429,10 @@ playability status is: {status} \
             thumbnails = self.player_response.get("videoDetails", {})\
                 .get("thumbnail", {})
         except Exception as e:
-            # This might occur if we invalidated the cache but the stream is not 
+            # This might occur if we invalidated the cache but the stream is not
             # live anymore, and "streamingData" key is missing from the json
             self.logger.warning(f"Error getting thumbnail metadata value: {e}")
-        
+
         return {
                 "url": self.url,
                 "videoId": self.video_id,

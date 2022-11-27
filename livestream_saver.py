@@ -134,6 +134,13 @@ merging of streams has been successful. Only useful for troubleshooting.'
         help='Skip the download phase (useful to run hook scripts instead).'\
             f' (Default: {config.getboolean("monitor", "skip_download")})'
     )
+    monitor_parser.add_argument('--ignore-quality-change',
+        action='store_true',
+        default=argparse.SUPPRESS,
+        help='If stream resolution changes during live-stream, keep downloading anyway.'\
+            f' (Default: {config.getboolean("monitor", "ignore_quality_change")})'
+    )
+
 
     # Sub-command "download"
     download_parser = subparsers.add_parser('download',
@@ -195,6 +202,12 @@ streams has been successful. Only useful for troubleshooting.'
         default=argparse.SUPPRESS,
         help='Skip the download phase (useful to run hook scripts instead).'\
             f' (Default: {config.getboolean("download", "skip_download")})'
+    )
+    download_parser.add_argument('--ignore-quality-change',
+        action='store_true',
+        default=argparse.SUPPRESS,
+        help='If stream resolution changes during live-stream, keep downloading anyway.'\
+            f' (Default: {config.getboolean("download", "ignore_quality_change")})'
     )
 
     # Sub-command "merge"
@@ -371,6 +384,7 @@ def _get_target_params(
         "channel_name": args.get("channel_name", None),
         "scan_delay": config.getfloat(sub_cmd, "scan_delay", vars=args),
         "skip_download": config.getboolean(sub_cmd, "skip_download", vars=args),
+        "ignore_quality_change": config.getboolean(sub_cmd, "ignore_quality_change", vars=args),
         "hooks": get_hooks_for_section(sub_cmd, config, "_command"),
         "webhooks": get_hooks_for_section(sub_cmd, config, "_webhook"),
         "cookie": config.get(sub_cmd, "cookie", vars=args, fallback=None),
@@ -424,6 +438,10 @@ def _get_target_params(
                 section, "skip_download", vars=args,
                 fallback=params["skip_download"]
             )
+            params["ignore_quality_change"] = config.getboolean(
+                section, "ignore_quality_change", vars=args,
+                fallback=params["ignore_quality_change"]
+            )
 
             # Update any hook already present with those defined in that section
             overriden_hooks = get_hooks_for_section(section, config, "_command")
@@ -454,6 +472,7 @@ def _get_target_params(
         )
     return params
 
+TIME_VARIANCE = 3.0  # in minutes
 
 def monitor_mode(config, args):
     URL = args["URL"]
@@ -470,29 +489,31 @@ def monitor_mode(config, args):
     ch = YoutubeChannel(
         URL, channel_id, session,
         output_dir=args["output_dir"], hooks=args["hooks"], notifier=NOTIFIER)
-
-    logger.info(f"Monitoring channel: {ch.id}")
+    ch.load_endpoints()
+    logger.info(f"Monitoring channel: {ch._id}")
 
     while True:
         live_videos = []
         try:
-            # Get the list of upcoming videos. This is done separately because
-            # detection is flaky right now.
-            ch.upcoming_videos
             live_videos = ch.filter_videos('isLiveNow')  # get the actual live stream
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Live videos found for channel "
-                    f"\"{ch.get_channel_name()}\": "
-                    f"{live_videos if len(live_videos) else None}"
-                )
+
+            # Calling this might trigger hooks twice for upcoming videos
+            # will probably become obsolete soon.
+            # ch.get_upcoming_videos(update=False)
+
+            # TODO print to stdout and overwrite line
+            logger.debug(
+                "Live videos found for channel "
+                f"\"{ch.get_channel_name()}\": "
+                f"{live_videos if len(live_videos) else None}"
+            )
         except Exception as e:
             # Handle urllib.error.URLError <urlopen error [Errno -3] Temporary failure in name resolution>
-            logger.exception(e)
+            logger.exception(f"Error while getting live videos: {e}")
             pass
 
         if len(live_videos) == 0:
-            wait_block(min_minutes=scan_delay, variance=3.5)
+            wait_block(min_minutes=scan_delay, variance=TIME_VARIANCE)
             continue
 
         target_live = live_videos[0]
@@ -512,12 +533,14 @@ def monitor_mode(config, args):
                 hooks=args["hooks"],
                 skip_download=args.get("skip_download", False),
                 filters=args["filters"],
+                ignore_quality_change=config.getboolean(
+                    "monitor", "ignore_quality_change", vars=args, fallback=False),
                 log_level=config.get("monitor", "log_level", vars=args)
             )
         except ValueError as e:
             # Constructor may throw
             logger.critical(e)
-            wait_block(min_minutes=scan_delay, variance=3.5)
+            wait_block(min_minutes=scan_delay, variance=TIME_VARIANCE)
             continue
 
         logger.info(
@@ -580,7 +603,7 @@ def monitor_mode(config, args):
             logger.critical("Error during stream download! Resuming monitoring...")
             pass
 
-        wait_block(min_minutes=scan_delay, variance=3.5)
+        wait_block(min_minutes=scan_delay, variance=TIME_VARIANCE)
     return 1
 
 
@@ -605,6 +628,8 @@ def download_mode(config, args):
             ),
             # no filters in this mode, we assume the user knows what they're doing
             filters={},
+            ignore_quality_change=config.getboolean(
+                "download", "ignore_quality_change", vars=args, fallback=False),
             log_level=config.get("download", "log_level", vars=args)
         )
     except ValueError as e:
@@ -709,6 +734,7 @@ def init_config() -> ConfigParser:
         "no_merge": "False",
         "skip_download": "False",
         "email_notifications": "False",
+        "ignore_quality_change": "False",
     }
     other_defaults = {
         "email": {
@@ -832,6 +858,7 @@ def main():
         args["hooks"] = params.get("hooks")
         args["cookie"] = params.get("cookie")
         args["skip_download"] = params.get("skip_download")
+        args["ignore_quality_change"] = params.get("ignore_quality_change")
         args["filters"] = params.get("filters", {})
 
         channel_id = get_channel_id(args["URL"], service_name="youtube")
@@ -865,6 +892,8 @@ def main():
         URL = args.get("URL", "")  # pass empty string for get_video_id()
         args["hooks"] = get_hooks_for_section(sub_cmd, config, "_command")
         args["cookie"] = config.get(sub_cmd, "cookie", vars=args, fallback=None)
+        args["ignore_quality_change"] = config.getboolean(
+            sub_cmd, "ignore_quality_change", vars=args, fallback=False)
 
         NOTIFIER.webhooks = get_hooks_for_section(sub_cmd, config, "_webhook")
         NOTIFIER.setup(config, args)

@@ -3,7 +3,8 @@ import re
 from os import makedirs
 from platform import system
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Dict
+from json import loads
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
@@ -50,10 +51,11 @@ def create_output_dir(output_dir: Path, video_id: Optional[str]) -> Path:
         capture_dirname = f"stream_capture_{video_id}"
         capture_dirpath = output_dir / capture_dirname
     logger.debug(f"Creating output_dir: {capture_dirpath}...")
-    makedirs(capture_dirpath, 0o766, exist_ok=True)
+    makedirs(capture_dirpath, 0o777, exist_ok=True)
     return capture_dirpath
 
 def get_system_ua():
+    # TODO dynamically generate instead of static strings
     SYSTEM = system()
     if SYSTEM == 'Windows':
         return 'Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
@@ -63,8 +65,8 @@ def get_system_ua():
 
 def is_wanted_based_on_metadata(
     data: Iterable[Optional[str]], 
-    allow_re: re.Pattern = None,
-    block_re: re.Pattern = None
+    allow_re: Optional[re.Pattern] = None,
+    block_re: Optional[re.Pattern] = None
     ) -> bool:
     """Test each RE against each item in data (title, description...)"""
     if allow_re is None and block_re is None:
@@ -101,3 +103,14 @@ event_props = [
 ]
 
 UA = get_system_ua()
+
+
+def str_as_json(string: str) -> Dict:
+    try:
+        j = loads(string)
+    except Exception as e:
+        logger.critical(f"Error loading JSON from string: {e}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"get_json_from_string: {string}")
+        raise
+    return j

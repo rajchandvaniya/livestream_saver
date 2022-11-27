@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 
 class NoLoginException(Exception):
     def __init__(self, video_id, reason):
@@ -53,4 +53,7 @@ class EmptySegmentException(Exception):
     pass
 
 class ForbiddenSegmentException(Exception):
+    pass
+
+class TabNotFound(Exception):
     pass
